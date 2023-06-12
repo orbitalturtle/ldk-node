@@ -722,6 +722,6 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 		scorer,
 		peer_store,
 		payment_store,
-                _onion_messenger: onion_messenger,
+                onion_messenger: onion_messenger,
 	})
 }

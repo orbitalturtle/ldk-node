@@ -130,7 +130,9 @@ use lightning::chain::keysinterface::EntropySource;
 use lightning::chain::Confirm;
 use lightning::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
 use lightning::ln::{PaymentHash, PaymentPreimage};
+use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents};
 
+use lightning::util::ser::{Writeable, Writer};
 use lightning::util::config::{ChannelConfig, ChannelHandshakeConfig, UserConfig};
 pub use lightning::util::logger::Level as LogLevel;
 
@@ -194,6 +196,23 @@ const WALLET_SYNC_INTERVAL_MINIMUM_SECS: u64 = 10;
 
 // The length in bytes of our wallets' keys seed.
 const WALLET_KEYS_SEED_LEN: usize = 64;
+
+struct UserOnionMessageContents {
+	tlv_type: u64,
+	data: Vec<u8>,
+}
+
+impl CustomOnionMessageContents for UserOnionMessageContents {
+	fn tlv_type(&self) -> u64 {
+		self.tlv_type
+	}
+}
+
+impl Writeable for UserOnionMessageContents {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+		w.write_all(&self.data)
+	}
+}
 
 #[derive(Debug, Clone)]
 /// Represents the configuration of an [`Node`] instance.
@@ -283,7 +302,7 @@ pub struct Node<K: KVStore + Sync + Send + 'static> {
 	scorer: Arc<Mutex<Scorer>>,
 	peer_store: Arc<PeerStore<K, Arc<FilesystemLogger>>>,
 	payment_store: Arc<PaymentStore<K, Arc<FilesystemLogger>>>,
-        _onion_messenger: Arc<OnionMessenger>,
+	onion_messenger: Arc<OnionMessenger>,
 }
 
 impl<K: KVStore + Sync + Send + 'static> Node<K> {
@@ -808,6 +827,21 @@ impl<K: KVStore + Sync + Send + 'static> Node<K> {
 		}
 
 		self.wallet.send_to_address(address, None)
+	}
+
+	/// Send an onion message to the following address.
+	pub fn send_onion_message(
+		&self, node_pks: Vec<PublicKey>, destination_pk: PublicKey, tlv_type: u64, data: Vec<u8>,
+	) {
+		match self.onion_messenger.send_onion_message(
+			&node_pks,
+			Destination::Node(destination_pk),
+			OnionMessageContents::Custom(UserOnionMessageContents { tlv_type, data }),
+			None,
+		) {
+			Ok(()) => println!("SUCCESS: forwarded onion message to first hop"),
+			Err(e) => println!("ERROR: failed to send onion message: {:?}", e),
+		}
 	}
 
 	/// Retrieve a list of known channels.
