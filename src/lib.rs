@@ -101,6 +101,8 @@ use error::Error;
 pub use event::Event;
 pub use types::NetAddress;
 
+use types::OnionMessenger;
+
 pub use io::utils::generate_entropy_mnemonic;
 
 #[cfg(feature = "uniffi")]
@@ -281,6 +283,7 @@ pub struct Node<K: KVStore + Sync + Send + 'static> {
 	scorer: Arc<Mutex<Scorer>>,
 	peer_store: Arc<PeerStore<K, Arc<FilesystemLogger>>>,
 	payment_store: Arc<PaymentStore<K, Arc<FilesystemLogger>>>,
+        _onion_messenger: Arc<OnionMessenger>,
 }
 
 impl<K: KVStore + Sync + Send + 'static> Node<K> {
