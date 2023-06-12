@@ -578,13 +578,13 @@ impl Builder {
 				chan_handler: Arc::clone(&channel_manager),
 				route_handler: Arc::clone(&p2p_gossip_sync)
 					as Arc<dyn RoutingMessageHandler + Sync + Send>,
-				onion_message_handler: onion_messenger,
+				onion_message_handler: onion_messenger.clone(),
 			},
 			GossipSync::Rapid(_) => MessageHandler {
 				chan_handler: Arc::clone(&channel_manager),
 				route_handler: Arc::new(IgnoringMessageHandler {})
 					as Arc<dyn RoutingMessageHandler + Sync + Send>,
-				onion_message_handler: onion_messenger,
+				onion_message_handler: onion_messenger.clone(),
 			},
 			GossipSync::None => {
 				unreachable!("We must always have a gossip sync!");
@@ -658,6 +658,7 @@ impl Builder {
 			scorer,
 			peer_store,
 			payment_store,
+                        _onion_messenger: onion_messenger,
 		})
 	}
 }
@@ -684,6 +685,7 @@ pub struct Node {
 	scorer: Arc<Mutex<Scorer>>,
 	peer_store: Arc<PeerStore<Arc<FilesystemStore>, Arc<FilesystemLogger>>>,
 	payment_store: Arc<PaymentStore<Arc<FilesystemStore>, Arc<FilesystemLogger>>>,
+        _onion_messenger: Arc<OnionMessenger>,
 }
 
 impl Node {
