@@ -122,7 +122,9 @@ use lightning::ln::channelmanager::{
 };
 use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents};
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
+use lightning::util::ser::{Writeable, Writer};
 
 use lightning::util::config::{ChannelHandshakeConfig, ChannelHandshakeLimits, UserConfig};
 use lightning::util::ser::ReadableArgs;
@@ -219,6 +221,23 @@ enum EntropySourceConfig {
 enum GossipSourceConfig {
 	P2PNetwork,
 	RapidGossipSync(String),
+}
+
+struct UserOnionMessageContents {
+	tlv_type: u64,
+	data: Vec<u8>,
+}
+
+impl CustomOnionMessageContents for UserOnionMessageContents {
+	fn tlv_type(&self) -> u64 {
+		self.tlv_type
+	}
+}
+
+impl Writeable for UserOnionMessageContents {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+		w.write_all(&self.data)
+	}
 }
 
 /// A builder for an [`Node`] instance, allowing to set some configuration and module choices from
@@ -658,7 +677,7 @@ impl Builder {
 			scorer,
 			peer_store,
 			payment_store,
-                        _onion_messenger: onion_messenger,
+			onion_messenger,
 		})
 	}
 }
@@ -685,7 +704,7 @@ pub struct Node {
 	scorer: Arc<Mutex<Scorer>>,
 	peer_store: Arc<PeerStore<Arc<FilesystemStore>, Arc<FilesystemLogger>>>,
 	payment_store: Arc<PaymentStore<Arc<FilesystemStore>, Arc<FilesystemLogger>>>,
-        _onion_messenger: Arc<OnionMessenger>,
+	onion_messenger: Arc<OnionMessenger>,
 }
 
 impl Node {
@@ -1104,6 +1123,21 @@ impl Node {
 		}
 
 		self.wallet.send_to_address(address, None)
+	}
+
+	/// Send an onion message to the following address.
+	pub fn send_onion_message(
+		&self, node_pks: Vec<PublicKey>, destination_pk: PublicKey, tlv_type: u64, data: Vec<u8>,
+	) {
+		match self.onion_messenger.send_onion_message(
+			&node_pks,
+			Destination::Node(destination_pk),
+			OnionMessageContents::Custom(UserOnionMessageContents { tlv_type, data }),
+			None,
+		) {
+			Ok(()) => println!("SUCCESS: forwarded onion message to first hop"),
+			Err(e) => println!("ERROR: failed to send onion message: {:?}", e),
+		}
 	}
 
 	/// Retrieve the currently spendable on-chain balance in satoshis.
