@@ -101,6 +101,8 @@ use error::Error;
 pub use event::Event;
 pub use types::NetAddress;
 
+use types::OnionMessenger;
+
 pub use io::utils::generate_entropy_mnemonic;
 
 #[cfg(feature = "uniffi")]
@@ -128,7 +130,9 @@ use lightning::chain::keysinterface::EntropySource;
 use lightning::chain::Confirm;
 use lightning::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
 use lightning::ln::{PaymentHash, PaymentPreimage};
+use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents};
 
+use lightning::util::ser::{Writeable, Writer};
 use lightning::util::config::{ChannelConfig, ChannelHandshakeConfig, UserConfig};
 pub use lightning::util::logger::Level as LogLevel;
 
@@ -193,26 +197,48 @@ const WALLET_SYNC_INTERVAL_MINIMUM_SECS: u64 = 10;
 // The length in bytes of our wallets' keys seed.
 const WALLET_KEYS_SEED_LEN: usize = 64;
 
+struct UserOnionMessageContents {
+	tlv_type: u64,
+	data: Vec<u8>,
+}
+
+impl CustomOnionMessageContents for UserOnionMessageContents {
+	fn tlv_type(&self) -> u64 {
+		self.tlv_type
+	}
+}
+
+impl Writeable for UserOnionMessageContents {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+		w.write_all(&self.data)
+	}
+}
+
 #[derive(Debug, Clone)]
 /// Represents the configuration of an [`Node`] instance.
 ///
 /// ### Defaults
 ///
-/// | Parameter                              | Value            |
-/// |----------------------------------------|------------------|
-/// | `storage_dir_path`                     | /tmp/ldk_node/   |
-/// | `network`                              | Bitcoin          |
-/// | `listening_address`                    | None             |
-/// | `default_cltv_expiry_delta`            | 144              |
-/// | `onchain_wallet_sync_interval_secs`    | 80               |
-/// | `wallet_sync_interval_secs`            | 30               |
-/// | `fee_rate_cache_update_interval_secs`  | 600              |
-/// | `trusted_peers_0conf`                  | []               |
-/// | `log_level`                            | Debug            |
+/// | Parameter                              | Value              |
+/// |----------------------------------------|--------------------|
+/// | `storage_dir_path`                     | /tmp/ldk_node/     |
+/// | `log_dir_path`                         | None               |
+/// | `network`                              | Bitcoin            |
+/// | `listening_address`                    | None               |
+/// | `default_cltv_expiry_delta`            | 144                |
+/// | `onchain_wallet_sync_interval_secs`    | 80                 |
+/// | `wallet_sync_interval_secs`            | 30                 |
+/// | `fee_rate_cache_update_interval_secs`  | 600                |
+/// | `trusted_peers_0conf`                  | []                 |
+/// | `log_level`                            | Debug              |
 ///
 pub struct Config {
 	/// The path where the underlying LDK and BDK persist their data.
 	pub storage_dir_path: String,
+	/// The path where logs are stored.
+	///
+	/// If set to `None`, logs can be found in the `logs` subdirectory in [`Config::storage_dir_path`].
+	pub log_dir_path: Option<String>,
 	/// The used Bitcoin network.
 	pub network: Network,
 	/// The IP address and TCP port the node will listen on.
@@ -247,6 +273,7 @@ impl Default for Config {
 	fn default() -> Self {
 		Self {
 			storage_dir_path: DEFAULT_STORAGE_DIR_PATH.to_string(),
+			log_dir_path: None,
 			network: DEFAULT_NETWORK,
 			listening_address: None,
 			default_cltv_expiry_delta: DEFAULT_CLTV_EXPIRY_DELTA,
@@ -281,6 +308,7 @@ pub struct Node<K: KVStore + Sync + Send + 'static> {
 	scorer: Arc<Mutex<Scorer>>,
 	peer_store: Arc<PeerStore<K, Arc<FilesystemLogger>>>,
 	payment_store: Arc<PaymentStore<K, Arc<FilesystemLogger>>>,
+	onion_messenger: Arc<OnionMessenger>,
 }
 
 impl<K: KVStore + Sync + Send + 'static> Node<K> {
@@ -805,6 +833,21 @@ impl<K: KVStore + Sync + Send + 'static> Node<K> {
 		}
 
 		self.wallet.send_to_address(address, None)
+	}
+
+	/// Send an onion message to the following address.
+	pub fn send_onion_message(
+		&self, node_pks: Vec<PublicKey>, destination_pk: PublicKey, tlv_type: u64, data: Vec<u8>,
+	) {
+		match self.onion_messenger.send_onion_message(
+			&node_pks,
+			Destination::Node(destination_pk),
+			OnionMessageContents::Custom(UserOnionMessageContents { tlv_type, data }),
+			None,
+		) {
+			Ok(()) => println!("SUCCESS: forwarded onion message to first hop"),
+			Err(e) => println!("ERROR: failed to send onion message: {:?}", e),
+		}
 	}
 
 	/// Retrieve a list of known channels.
