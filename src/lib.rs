@@ -128,13 +128,17 @@ use logger::{log_error, log_info, log_trace, FilesystemLogger, Logger};
 
 use lightning::chain::keysinterface::EntropySource;
 use lightning::chain::Confirm;
+use lightning::io::Read;
 use lightning::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
+use lightning::ln::msgs::DecodeError;
 use lightning::ln::{PaymentHash, PaymentPreimage};
-use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents};
+use lightning::onion_message::{
+	CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents,
+};
 
-use lightning::util::ser::{Writeable, Writer};
 use lightning::util::config::{ChannelConfig, ChannelHandshakeConfig, UserConfig};
 pub use lightning::util::logger::Level as LogLevel;
+use lightning::util::ser::{Writeable, Writer};
 
 use lightning_background_processor::process_events_async;
 
@@ -152,8 +156,10 @@ use bitcoin::{Address, Txid};
 
 use rand::Rng;
 
+use std::collections::VecDeque;
 use std::default::Default;
 use std::net::ToSocketAddrs;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -211,6 +217,34 @@ impl CustomOnionMessageContents for UserOnionMessageContents {
 impl Writeable for UserOnionMessageContents {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
 		w.write_all(&self.data)
+	}
+}
+
+// An extremely basic message handler needed for our integration tests.
+pub struct OnionMessageHandler {
+	pub messages: Mutex<VecDeque<UserOnionMessageContents>>,
+}
+
+impl CustomOnionMessageHandler for OnionMessageHandler {
+	type CustomMessage = UserOnionMessageContents;
+
+	fn handle_custom_message(&self, msg: Self::CustomMessage) {
+		println!("Received a new custom message!");
+		self.messages.lock().unwrap().push_back(msg);
+	}
+
+	fn read_custom_message<R: Read>(
+		&self, message_type: u64, buffer: &mut R,
+	) -> Result<Option<Self::CustomMessage>, DecodeError> {
+		unimplemented!();
+	}
+}
+
+impl Deref for OnionMessageHandler {
+	type Target = OnionMessageHandler;
+
+	fn deref(&self) -> &Self::Target {
+		&self
 	}
 }
 
@@ -309,6 +343,7 @@ pub struct Node<K: KVStore + Sync + Send + 'static> {
 	peer_store: Arc<PeerStore<K, Arc<FilesystemLogger>>>,
 	payment_store: Arc<PaymentStore<K, Arc<FilesystemLogger>>>,
 	onion_messenger: Arc<OnionMessenger>,
+	pub custom_handler: Arc<OnionMessageHandler>,
 }
 
 impl<K: KVStore + Sync + Send + 'static> Node<K> {

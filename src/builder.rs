@@ -14,8 +14,8 @@ use crate::types::{
 use crate::wallet::Wallet;
 use crate::LogLevel;
 use crate::{
-	Config, Node, BDK_CLIENT_CONCURRENCY, BDK_CLIENT_STOP_GAP, DEFAULT_ESPLORA_SERVER_URL,
-	WALLET_KEYS_SEED_LEN,
+	Config, Node, OnionMessageHandler, BDK_CLIENT_CONCURRENCY, BDK_CLIENT_STOP_GAP,
+	DEFAULT_ESPLORA_SERVER_URL, WALLET_KEYS_SEED_LEN,
 };
 
 use lightning::chain::keysinterface::EntropySource;
@@ -42,6 +42,7 @@ use bip39::Mnemonic;
 
 use bitcoin::BlockHash;
 
+use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::default::Default;
 use std::fmt;
@@ -394,11 +395,8 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 	};
 
 	// Initialize the Logger
-	let log_file_path = format!(
-		"{}/ldk_node_{}.log",
-                log_dir,
-		chrono::offset::Local::now().format("%Y_%m_%d")
-	);
+	let log_file_path =
+		format!("{}/ldk_node_{}.log", log_dir, chrono::offset::Local::now().format("%Y_%m_%d"));
 	let logger = Arc::new(
 		FilesystemLogger::new(log_file_path.clone(), config.log_level)
 			.map_err(|_| BuildError::LoggerSetupFailed)?,
@@ -611,12 +609,15 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 		chain_monitor.watch_channel(funding_outpoint, channel_monitor);
 	}
 
+	let onion_message_handler =
+		Arc::new(OnionMessageHandler { messages: Mutex::new(VecDeque::new()) });
+
 	// Initialize the PeerManager
 	let onion_messenger: Arc<OnionMessenger> = Arc::new(OnionMessenger::new(
 		Arc::clone(&keys_manager),
 		Arc::clone(&keys_manager),
 		Arc::clone(&logger),
-		IgnoringMessageHandler {},
+		Arc::clone(&onion_message_handler),
 	));
 	let ephemeral_bytes: [u8; 32] = keys_manager.get_secure_random_bytes();
 
@@ -738,6 +739,7 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 		scorer,
 		peer_store,
 		payment_store,
-                onion_messenger: onion_messenger,
+		onion_messenger,
+		custom_handler: onion_message_handler,
 	})
 }

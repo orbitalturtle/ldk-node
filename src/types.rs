@@ -1,5 +1,6 @@
 use crate::logger::FilesystemLogger;
 use crate::wallet::{Wallet, WalletKeysManager};
+use crate::OnionMessageHandler;
 
 use lightning::chain::chainmonitor;
 use lightning::chain::keysinterface::InMemorySigner;
@@ -84,7 +85,7 @@ pub(crate) type OnionMessenger = lightning::onion_message::OnionMessenger<
 	Arc<WalletKeysManager<bdk::database::SqliteDatabase, Arc<FilesystemLogger>>>,
 	Arc<WalletKeysManager<bdk::database::SqliteDatabase, Arc<FilesystemLogger>>>,
 	Arc<FilesystemLogger>,
-	IgnoringMessageHandler,
+	Arc<OnionMessageHandler>,
 >;
 
 /// The global identifier of a channel.
