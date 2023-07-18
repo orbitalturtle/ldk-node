@@ -203,6 +203,7 @@ const WALLET_SYNC_INTERVAL_MINIMUM_SECS: u64 = 10;
 // The length in bytes of our wallets' keys seed.
 const WALLET_KEYS_SEED_LEN: usize = 64;
 
+#[derive(Debug)]
 pub struct UserOnionMessageContents {
 	tlv_type: u64,
 	data: Vec<u8>,
