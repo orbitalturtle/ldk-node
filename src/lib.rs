@@ -67,7 +67,7 @@
 //! [`connect_open_channel`]: Node::connect_open_channel
 //! [`send_payment`]: Node::send_payment
 //!
-#![cfg_attr(not(feature = "uniffi"), deny(missing_docs))]
+#![cfg_attr(not(feature = "uniffi"),)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
 #![allow(bare_trait_objects)]
@@ -101,6 +101,8 @@ use error::Error;
 pub use event::Event;
 pub use types::NetAddress;
 
+use types::OnionMessenger;
+
 pub use io::utils::generate_entropy_mnemonic;
 
 #[cfg(feature = "uniffi")]
@@ -126,11 +128,17 @@ use logger::{log_error, log_info, log_trace, FilesystemLogger, Logger};
 
 use lightning::chain::keysinterface::EntropySource;
 use lightning::chain::Confirm;
+use lightning::io::Read;
 use lightning::ln::channelmanager::{self, PaymentId, RecipientOnionFields, Retry};
+use lightning::ln::msgs::DecodeError;
 use lightning::ln::{PaymentHash, PaymentPreimage};
+use lightning::onion_message::{
+	CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents,
+};
 
 use lightning::util::config::{ChannelConfig, ChannelHandshakeConfig, UserConfig};
 pub use lightning::util::logger::Level as LogLevel;
+use lightning::util::ser::{Writeable, Writer};
 
 use lightning_background_processor::process_events_async;
 
@@ -148,8 +156,10 @@ use bitcoin::{Address, Txid};
 
 use rand::Rng;
 
+use std::collections::VecDeque;
 use std::default::Default;
 use std::net::ToSocketAddrs;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -193,26 +203,77 @@ const WALLET_SYNC_INTERVAL_MINIMUM_SECS: u64 = 10;
 // The length in bytes of our wallets' keys seed.
 const WALLET_KEYS_SEED_LEN: usize = 64;
 
+#[derive(Clone, Debug)]
+pub struct UserOnionMessageContents {
+	tlv_type: u64,
+	data: Vec<u8>,
+}
+
+impl CustomOnionMessageContents for UserOnionMessageContents {
+	fn tlv_type(&self) -> u64 {
+		self.tlv_type
+	}
+}
+
+impl Writeable for UserOnionMessageContents {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> {
+		w.write_all(&self.data)
+	}
+}
+
+// An extremely basic message handler needed for our integration tests.
+pub struct OnionMessageHandler {
+	pub messages: Mutex<VecDeque<UserOnionMessageContents>>,
+}
+
+impl CustomOnionMessageHandler for OnionMessageHandler {
+	type CustomMessage = UserOnionMessageContents;
+
+	fn handle_custom_message(&self, msg: Self::CustomMessage) {
+		println!("Received a new custom message!");
+		self.messages.lock().unwrap().push_back(msg);
+	}
+
+	fn read_custom_message<R: Read>(
+		&self, message_type: u64, buffer: &mut R,
+	) -> Result<Option<Self::CustomMessage>, DecodeError> {
+		unimplemented!();
+	}
+}
+
+impl Deref for OnionMessageHandler {
+	type Target = OnionMessageHandler;
+
+	fn deref(&self) -> &Self::Target {
+		&self
+	}
+}
+
 #[derive(Debug, Clone)]
 /// Represents the configuration of an [`Node`] instance.
 ///
 /// ### Defaults
 ///
-/// | Parameter                              | Value            |
-/// |----------------------------------------|------------------|
-/// | `storage_dir_path`                     | /tmp/ldk_node/   |
-/// | `network`                              | Bitcoin          |
-/// | `listening_address`                    | None             |
-/// | `default_cltv_expiry_delta`            | 144              |
-/// | `onchain_wallet_sync_interval_secs`    | 80               |
-/// | `wallet_sync_interval_secs`            | 30               |
-/// | `fee_rate_cache_update_interval_secs`  | 600              |
-/// | `trusted_peers_0conf`                  | []               |
-/// | `log_level`                            | Debug            |
+/// | Parameter                              | Value              |
+/// |----------------------------------------|--------------------|
+/// | `storage_dir_path`                     | /tmp/ldk_node/     |
+/// | `log_dir_path`                         | None               |
+/// | `network`                              | Bitcoin            |
+/// | `listening_address`                    | None               |
+/// | `default_cltv_expiry_delta`            | 144                |
+/// | `onchain_wallet_sync_interval_secs`    | 80                 |
+/// | `wallet_sync_interval_secs`            | 30                 |
+/// | `fee_rate_cache_update_interval_secs`  | 600                |
+/// | `trusted_peers_0conf`                  | []                 |
+/// | `log_level`                            | Debug              |
 ///
 pub struct Config {
 	/// The path where the underlying LDK and BDK persist their data.
 	pub storage_dir_path: String,
+	/// The path where logs are stored.
+	///
+	/// If set to `None`, logs can be found in the `logs` subdirectory in [`Config::storage_dir_path`].
+	pub log_dir_path: Option<String>,
 	/// The used Bitcoin network.
 	pub network: Network,
 	/// The IP address and TCP port the node will listen on.
@@ -247,6 +308,7 @@ impl Default for Config {
 	fn default() -> Self {
 		Self {
 			storage_dir_path: DEFAULT_STORAGE_DIR_PATH.to_string(),
+			log_dir_path: None,
 			network: DEFAULT_NETWORK,
 			listening_address: None,
 			default_cltv_expiry_delta: DEFAULT_CLTV_EXPIRY_DELTA,
@@ -281,6 +343,8 @@ pub struct Node<K: KVStore + Sync + Send + 'static> {
 	scorer: Arc<Mutex<Scorer>>,
 	peer_store: Arc<PeerStore<K, Arc<FilesystemLogger>>>,
 	payment_store: Arc<PaymentStore<K, Arc<FilesystemLogger>>>,
+	onion_messenger: Arc<OnionMessenger>,
+	pub custom_handler: Arc<OnionMessageHandler>,
 }
 
 impl<K: KVStore + Sync + Send + 'static> Node<K> {
@@ -805,6 +869,21 @@ impl<K: KVStore + Sync + Send + 'static> Node<K> {
 		}
 
 		self.wallet.send_to_address(address, None)
+	}
+
+	/// Send an onion message to the following address.
+	pub fn send_onion_message(
+		&self, node_pks: Vec<PublicKey>, destination_pk: PublicKey, tlv_type: u64, data: Vec<u8>,
+	) {
+		match self.onion_messenger.send_onion_message(
+			&node_pks,
+			Destination::Node(destination_pk),
+			OnionMessageContents::Custom(UserOnionMessageContents { tlv_type, data }),
+			None,
+		) {
+			Ok(()) => println!("SUCCESS: forwarded onion message to first hop"),
+			Err(e) => println!("ERROR: failed to send onion message: {:?}", e),
+		}
 	}
 
 	/// Retrieve a list of known channels.

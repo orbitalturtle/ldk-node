@@ -14,8 +14,8 @@ use crate::types::{
 use crate::wallet::Wallet;
 use crate::LogLevel;
 use crate::{
-	Config, Node, BDK_CLIENT_CONCURRENCY, BDK_CLIENT_STOP_GAP, DEFAULT_ESPLORA_SERVER_URL,
-	WALLET_KEYS_SEED_LEN,
+	Config, Node, OnionMessageHandler, BDK_CLIENT_CONCURRENCY, BDK_CLIENT_STOP_GAP,
+	DEFAULT_ESPLORA_SERVER_URL, WALLET_KEYS_SEED_LEN,
 };
 
 use lightning::chain::keysinterface::EntropySource;
@@ -42,6 +42,7 @@ use bip39::Mnemonic;
 
 use bitcoin::BlockHash;
 
+use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::default::Default;
 use std::fmt;
@@ -202,6 +203,12 @@ impl NodeBuilder {
 		self
 	}
 
+	/// Sets the log dir path if logs need to live separate from the storage directory path.
+	pub fn set_log_dir_path(&mut self, log_dir_path: String) -> &mut Self {
+		self.config.log_dir_path = Some(log_dir_path);
+		self
+	}
+
 	/// Sets the Bitcoin network used.
 	pub fn set_network(&mut self, network: Network) -> &mut Self {
 		self.config.network = network;
@@ -329,6 +336,11 @@ impl ArcedNodeBuilder {
 		self.inner.write().unwrap().set_storage_dir_path(storage_dir_path);
 	}
 
+	/// Sets the log dir path if logs need to live separate from the storage directory path.
+	pub fn set_log_dir_path(&self, log_dir_path: String) {
+		self.inner.write().unwrap().set_log_dir_path(log_dir_path);
+	}
+
 	/// Sets the Bitcoin network used.
 	pub fn set_network(&self, network: Network) {
 		self.inner.write().unwrap().set_network(network);
@@ -377,12 +389,14 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 	let bdk_data_dir = format!("{}/bdk", config.storage_dir_path);
 	fs::create_dir_all(bdk_data_dir.clone()).map_err(|_| BuildError::StoragePathAccessFailed)?;
 
+	let log_dir = match &config.log_dir_path {
+		Some(log_dir) => String::from(log_dir),
+		None => config.storage_dir_path.clone() + "/logs",
+	};
+
 	// Initialize the Logger
-	let log_file_path = format!(
-		"{}/logs/ldk_node_{}.log",
-		config.storage_dir_path,
-		chrono::offset::Local::now().format("%Y_%m_%d")
-	);
+	let log_file_path =
+		format!("{}/ldk_node_{}.log", log_dir, chrono::offset::Local::now().format("%Y_%m_%d"));
 	let logger = Arc::new(
 		FilesystemLogger::new(log_file_path.clone(), config.log_level)
 			.map_err(|_| BuildError::LoggerSetupFailed)?,
@@ -595,12 +609,15 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 		chain_monitor.watch_channel(funding_outpoint, channel_monitor);
 	}
 
+	let onion_message_handler =
+		Arc::new(OnionMessageHandler { messages: Mutex::new(VecDeque::new()) });
+
 	// Initialize the PeerManager
 	let onion_messenger: Arc<OnionMessenger> = Arc::new(OnionMessenger::new(
 		Arc::clone(&keys_manager),
 		Arc::clone(&keys_manager),
 		Arc::clone(&logger),
-		IgnoringMessageHandler {},
+		Arc::clone(&onion_message_handler),
 	));
 	let ephemeral_bytes: [u8; 32] = keys_manager.get_secure_random_bytes();
 
@@ -646,13 +663,13 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 			chan_handler: Arc::clone(&channel_manager),
 			route_handler: Arc::clone(&p2p_gossip_sync)
 				as Arc<dyn RoutingMessageHandler + Sync + Send>,
-			onion_message_handler: onion_messenger,
+			onion_message_handler: onion_messenger.clone(),
 		},
 		GossipSync::Rapid(_) => MessageHandler {
 			chan_handler: Arc::clone(&channel_manager),
 			route_handler: Arc::new(IgnoringMessageHandler {})
 				as Arc<dyn RoutingMessageHandler + Sync + Send>,
-			onion_message_handler: onion_messenger,
+			onion_message_handler: onion_messenger.clone(),
 		},
 		GossipSync::None => {
 			unreachable!("We must always have a gossip sync!");
@@ -722,5 +739,7 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 		scorer,
 		peer_store,
 		payment_store,
+		onion_messenger,
+		custom_handler: onion_message_handler,
 	})
 }
