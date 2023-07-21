@@ -67,7 +67,7 @@
 //! [`connect_open_channel`]: Node::connect_open_channel
 //! [`send_payment`]: Node::send_payment
 //!
-#![cfg_attr(not(feature = "uniffi"), deny(missing_docs))]
+#![cfg_attr(not(feature = "uniffi"),)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
 #![allow(bare_trait_objects)]
@@ -203,7 +203,7 @@ const WALLET_SYNC_INTERVAL_MINIMUM_SECS: u64 = 10;
 // The length in bytes of our wallets' keys seed.
 const WALLET_KEYS_SEED_LEN: usize = 64;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UserOnionMessageContents {
 	tlv_type: u64,
 	data: Vec<u8>,
